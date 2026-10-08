@@ -1,0 +1,58 @@
+name: Docker CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  docker-quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint Dockerfile with Hadolint
+        run: |
+          docker run --rm \
+            -v "$PWD/.hadolint.yaml:/root/.config/hadolint.yaml:ro" \
+            -v "$PWD/Dockerfile:/Dockerfile:ro" \
+            hadolint/hadolint \
+            hadolint --config /root/.config/hadolint.yaml /Dockerfile
+
+      - name: Build Docker image
+        run: |
+          docker build --no-cache -t legacy-app:ci .
+
+      - name: Check image size
+        run: |
+          SIZE_BYTES=$(docker image inspect legacy-app:ci --format='{{.Size}}')
+          MAX_BYTES=$((60 * 1024 * 1024))
+
+          echo "Image size: $SIZE_BYTES bytes"
+          echo "Maximum allowed: $MAX_BYTES bytes"
+
+          if [ "$SIZE_BYTES" -ge "$MAX_BYTES" ]; then
+            echo "Image exceeds the 60 MB limit."
+            exit 1
+          fi
+
+      - name: Smoke test HTTP
+        run: |
+          docker run -d \
+            --name legacy-app-ci \
+            -p 5000:5000 \
+            legacy-app:ci
+
+          for i in $(seq 1 15); do
+            if curl --fail --silent http://localhost:5000/ > /dev/null; then
+              echo "Smoke test passed."
+              exit 0
+            fi
+
+            sleep 2
+          done
+
+          echo "Application did not return HTTP 200."
+          docker logs legacy-app-ci
+          exit 1
